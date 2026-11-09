@@ -23,11 +23,40 @@ def run_audit_agent(db: Session, state: ApprovalState) -> dict:
         if state.approver_id is not None:
             db_tools.assign_approver(db, state.entity_type, state.entity_id, state.approver_id)
         db_tools.update_entity_status(db, state.entity_type, state.entity_id, final_status)
-    except Exception as exc:  # keep the audit trail even if the update fails
-        remarks = f"Entity update failed: {exc}"
-        final_status = state.final_status or EntityStatus.ESCALATED
+    except Exception as exc:
+        # Roll back the failed update so the session can still persist the
+        # trail (a flush error would otherwise poison the transaction), and
+        # report ESCALATED rather than a status the database does not hold.
+        # Nothing else is pending at this point: agents only read, and all
+        # audit writes happen below.
+        db.rollback()
+        remarks = f"Entity update to {final_status.value} failed: {exc}"
+        final_status = EntityStatus.ESCALATED
+        try:
+            db_tools.update_entity_status(
+                db, state.entity_type, state.entity_id, EntityStatus.ESCALATED
+            )
+        except Exception as fallback_exc:
+            db.rollback()
+            remarks += f"; escalation fallback also failed: {fallback_exc}"
 
-    for step, entry in enumerate(state.audit_entries, start=1):
+    decision = state.decision
+    steps = " ".join(e.reasoning_trace for e in state.audit_entries if e.reasoning_trace)
+    summary = (
+        f"{state.entity_type.value} {state.entity_id} (value {state.entity_value}) "
+        f"-> {final_status.value}. {state.status_reason or ''} {steps}".strip()
+    )
+    final_entry = AuditEntry(
+        action="final_decision",
+        agent_name=AGENT_NAME,
+        policy_id=decision.policy_id if decision else None,
+        rule_applied=decision.required_rule_id if decision else None,
+        tool_called="persist_audit_log",
+        reasoning_trace=summary,
+        remarks=remarks or state.error,
+    )
+
+    for step, entry in enumerate([*state.audit_entries, final_entry], start=1):
         db_tools.persist_audit_log(
             db,
             state.entity_type,
@@ -42,26 +71,5 @@ def run_audit_agent(db: Session, state: ApprovalState) -> dict:
             reasoning_trace=entry.reasoning_trace,
             remarks=entry.remarks,
         )
-
-    decision = state.decision
-    steps = " ".join(e.reasoning_trace for e in state.audit_entries if e.reasoning_trace)
-    summary = (
-        f"{state.entity_type.value} {state.entity_id} (value {state.entity_value}) "
-        f"-> {final_status.value}. {state.status_reason or ''} {steps}".strip()
-    )
-    db_tools.persist_audit_log(
-        db,
-        state.entity_type,
-        state.entity_id,
-        execution_id=state.execution_id,
-        step_number=len(state.audit_entries) + 1,
-        action="final_decision",
-        agent_name=AGENT_NAME,
-        policy_id=decision.policy_id if decision else None,
-        rule_applied=decision.required_rule_id if decision else None,
-        tool_called="persist_audit_log",
-        reasoning_trace=summary,
-        remarks=remarks or state.error,
-    )
 
     return {"final_status": final_status}

@@ -69,6 +69,11 @@ class TestOrderLifecycle:
         assert trail[-1]["action"] == "human_approve"
         assert trail[-1]["performed_by"] == carol
         assert trail[-1]["remarks"] == "Budget available"
+        # Human action is its own single-step execution: no NULL steps anywhere
+        assert trail[-1]["step_number"] == 1
+        assert trail[-1]["execution_id"] is not None
+        assert trail[-1]["execution_id"] != trail[0]["execution_id"]
+        assert all(t["step_number"] is not None for t in trail)
 
     def test_approver_rejects(self, client, seeded_db):
         bob = _uid(seeded_db, "bob.supervisor@example.com")
@@ -231,5 +236,6 @@ class TestPolicyAndAuditApis:
         assert policy_step["policy_id"] is not None
         assert policy_step["rule_applied"] is not None
         assert "DEPARTMENT_HEAD" in policy_step["reasoning_trace"]
-        assert len({t["execution_id"] for t in trail}) == 1
+        execution_ids = {t["execution_id"] for t in trail}
+        assert len(execution_ids) == 1 and None not in execution_ids
         assert [t["step_number"] for t in trail] == [1, 2, 3, 4, 5]

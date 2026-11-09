@@ -1,6 +1,7 @@
 """Entity creation (workflow trigger) and the human approval action (D7/D8)."""
 
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -96,10 +97,14 @@ def apply_action(
     # the loser of a concurrent duplicate action.
     info = db_tools.update_entity_status(db, entity_type, entity_id, new_status)
 
+    # A human action is its own single-step execution, so the trail never
+    # mixes NULL step numbers with the workflow's numbered steps.
     db_tools.persist_audit_log(
         db,
         entity_type,
         entity_id,
+        execution_id=str(uuid4()),
+        step_number=1,
         action=f"human_{action.lower()}",
         performed_by=actor_id,
         agent_name=None,

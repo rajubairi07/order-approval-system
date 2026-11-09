@@ -117,7 +117,7 @@ The entity is created and the Context & Capability Agent performs the check (as 
 A Finance Head is **not** the approver for a ₹5,000 order; only Admin transcends bands (via D2). A role-hierarchy table was considered and deliberately left out as beyond the assignment's rules.
 
 ### D6 — Per-step, structured + explained audit
-One `ApprovalLog` row per agent action with structured fields (`agent_name`, `action`, `policy_id`, `rule_applied`, `tool_called`, `performed_by`, `execution_id`, `step_number`) **and** a concise natural-language `reasoning_trace` — never raw LLM chain-of-thought. `policy_id`, `tool_called`, `execution_id` and `step_number` extend the assignment's schema because its audit requirement demands the exact policy, the tool trail, and an ordered step-by-step trace of each workflow run.
+One `ApprovalLog` row per agent action with structured fields (`agent_name`, `action`, `policy_id`, `rule_applied`, `tool_called`, `performed_by`, `execution_id`, `step_number`) **and** a concise natural-language `reasoning_trace` — never raw LLM chain-of-thought. `policy_id`, `tool_called`, `execution_id` and `step_number` extend the assignment's schema because its audit requirement demands the exact policy, the tool trail, and an ordered step-by-step trace of each workflow run. A human APPROVE/REJECT is recorded as its own single-step execution (fresh `execution_id`, `step_number` 1), so a trail never mixes numbered and NULL steps.
 
 ### D7 — Approval action security (documented simplification: no auth system)
 `POST /{entity}/{id}/action` takes `{user_id, action, remarks}`. Server-side: actor must be the assigned `current_approver` (or satisfy D8 for escalated entities), be active, and the transition must be legal. The row is locked with `SELECT … FOR UPDATE` (PostgreSQL) for the whole check-and-transition, so concurrent duplicate actions serialize and the loser gets 409. Creators are excluded from eligibility (no self-approval); among multiple eligible approvers the lowest user id wins (deterministic).
@@ -158,7 +158,7 @@ All 16 required cases are covered across `tests/` (97 tests): admin auto-approva
 
 ## Scope notes
 
-- **Migrations:** `Base.metadata.create_all` + idempotent seed instead of Alembic — a deliberate trade-off for the 8–12h scope; the models are Alembic-ready.
+- **Migrations:** `Base.metadata.create_all` + idempotent seed instead of Alembic — a deliberate trade-off for the 8–12h scope; the models are Alembic-ready. Note `create_all` never ALTERs existing tables: after pulling a schema change, recreate the dev database (`docker compose down -v && docker compose up -d && python -m app.database.seed`).
 - **Tests on SQLite:** fast and service-free; `FOR UPDATE` is a no-op on SQLite and takes effect on PostgreSQL.
 - **HITL interrupt/resume:** the good-to-have LangGraph `interrupt()` pattern is deferred; the API-based human approval flow (assignment's required path) is complete.
 - **Auth:** actor identity travels in the payload by design (D7); a real deployment would replace it with authenticated identity.

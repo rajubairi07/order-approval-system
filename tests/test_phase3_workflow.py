@@ -192,6 +192,33 @@ class TestAuditTrail:
         logs = _logs(seeded_db, EntityType.ORDER, order.id)
         assert not any(l.remarks and "Guardrail" in l.remarks for l in logs)
 
+    def test_entity_update_failure_escalates_and_keeps_trail(self, seeded_db, llm, monkeypatch):
+        """If applying the final status fails, the run must report ESCALATED
+        (not the unapplied optimistic status) and still persist its trail."""
+        from app import tools as db_tools
+        from app.agents import audit_agent
+
+        original = db_tools.update_entity_status
+        calls = {"n": 0}
+
+        def failing_update(db, entity_type, entity_id, new_status, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:  # fail the optimistic PENDING_APPROVAL write
+                raise RuntimeError("simulated storage failure")
+            return original(db, entity_type, entity_id, new_status, **kwargs)
+
+        monkeypatch.setattr(audit_agent.db_tools, "update_entity_status", failing_update)
+        order = _order(seeded_db, "bob.supervisor@example.com", "75000.00")
+        result = process_entity(seeded_db, EntityType.ORDER, order.id, llm)
+
+        assert result.final_status == EntityStatus.ESCALATED
+        seeded_db.refresh(order)
+        assert order.status == EntityStatus.ESCALATED  # fallback write applied
+        logs = _logs(seeded_db, EntityType.ORDER, order.id)
+        assert len(logs) == 5  # trail survived the failure
+        assert "simulated storage failure" in logs[-1].remarks
+        assert "ESCALATED" in logs[-1].reasoning_trace
+
     def test_tool_traces_recorded(self, seeded_db, llm):
         order = _order(seeded_db, "alice.admin@example.com", "100.00")
         process_entity(seeded_db, EntityType.ORDER, order.id, llm)

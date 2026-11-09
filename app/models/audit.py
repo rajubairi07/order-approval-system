@@ -27,9 +27,7 @@ class ApprovalLog(Base):
         Enum(EntityType, native_enum=False, length=20)
     )
     entity_id: Mapped[int] = mapped_column()
-    execution_id: Mapped[str | None] = mapped_column(
-        String(36), nullable=True, index=True
-    )
+    execution_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     step_number: Mapped[int | None] = mapped_column(nullable=True)
     action: Mapped[str] = mapped_column(String(100))
     performed_by: Mapped[int | None] = mapped_column(

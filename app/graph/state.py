@@ -3,8 +3,9 @@
 import operator
 from decimal import Decimal
 from typing import Annotated
+from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.enums import CapabilityType, EntityStatus, EntityType
 from app.schemas.approval import PolicyDecision
@@ -28,7 +29,9 @@ class ApprovalState(BaseModel):
     # Workflow inputs (spec section 5)
     entity_type: EntityType
     entity_id: int
-    execution_id: str | None = None
+    # Generated per run by construction, so no entry point can produce
+    # NULL-grouped audit rows.
+    execution_id: str = Field(default_factory=lambda: str(uuid4()))
     creator_id: int
     entity_value: Decimal
     capability: CapabilityType
