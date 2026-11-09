@@ -17,7 +17,7 @@ _ENTITY_MODEL = {EntityType.ORDER: Order, EntityType.QUOTE: Quote}
 _VALUE_ATTR = {EntityType.ORDER: "order_value", EntityType.QUOTE: "quote_value"}
 
 
-def _load(db: Session, entity_type: EntityType, entity_id: int, *, for_update: bool = False):
+def load_row(db: Session, entity_type: EntityType, entity_id: int, *, for_update: bool = False):
     query = db.query(_ENTITY_MODEL[entity_type])
     if for_update:
         query = query.with_for_update()
@@ -40,7 +40,7 @@ def _to_info(entity_type: EntityType, row) -> EntityInfo:
 
 def get_entity_details(db: Session, entity_type: EntityType, entity_id: int) -> EntityInfo:
     """Fetch an order/quote as a uniform EntityInfo."""
-    return _to_info(entity_type, _load(db, entity_type, entity_id))
+    return _to_info(entity_type, load_row(db, entity_type, entity_id))
 
 
 def update_entity_status(
@@ -57,7 +57,7 @@ def update_entity_status(
     for_update=True from the approval-action path to row-lock against
     concurrent duplicate actions (spec decision D7).
     """
-    row = _load(db, entity_type, entity_id, for_update=for_update)
+    row = load_row(db, entity_type, entity_id, for_update=for_update)
     validate_transition(row.status, new_status)
     row.status = new_status
     db.flush()
@@ -68,7 +68,7 @@ def assign_approver(
     db: Session, entity_type: EntityType, entity_id: int, approver_id: int
 ) -> EntityInfo:
     """Set current_approver on an entity."""
-    row = _load(db, entity_type, entity_id)
+    row = load_row(db, entity_type, entity_id)
     row.current_approver = approver_id
     db.flush()
     return _to_info(entity_type, row)
