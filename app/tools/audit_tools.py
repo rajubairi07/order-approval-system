@@ -12,6 +12,8 @@ def persist_audit_log(
     entity_id: int,
     action: str,
     *,
+    execution_id: str | None = None,
+    step_number: int | None = None,
     performed_by: int | None = None,
     agent_name: str | None = None,
     policy_id: int | None = None,
@@ -28,6 +30,8 @@ def persist_audit_log(
     log = ApprovalLog(
         entity_type=entity_type,
         entity_id=entity_id,
+        execution_id=execution_id,
+        step_number=step_number,
         action=action,
         performed_by=performed_by,
         agent_name=agent_name,

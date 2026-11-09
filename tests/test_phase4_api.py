@@ -231,3 +231,5 @@ class TestPolicyAndAuditApis:
         assert policy_step["policy_id"] is not None
         assert policy_step["rule_applied"] is not None
         assert "DEPARTMENT_HEAD" in policy_step["reasoning_trace"]
+        assert len({t["execution_id"] for t in trail}) == 1
+        assert [t["step_number"] for t in trail] == [1, 2, 3, 4, 5]

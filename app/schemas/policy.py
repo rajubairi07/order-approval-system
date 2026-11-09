@@ -57,6 +57,8 @@ class AuditLogResponse(BaseModel):
     id: int
     entity_type: EntityType
     entity_id: int
+    execution_id: str | None
+    step_number: int | None
     action: str
     performed_by: int | None
     agent_name: str | None

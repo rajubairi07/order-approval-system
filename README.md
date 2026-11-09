@@ -105,6 +105,8 @@ All monetary values are `Numeric(12,2)` (API validates ≤ 2 decimals). Rule int
 ### D2 — Admin authority as data, not code
 Admin's unlimited authority is a seeded **catch-all rule** `[0, NULL]` at `priority 100` (band rules are `priority 10`). The rule set is used two ways: the **required approver** is the role of the highest-precedence matching rule (so ₹75,000 requires a Department Head, never Admin), while a **creator auto-approves** when they hold the role of *any* matching rule (so Admin approves everything via the catch-all, and a Department Head auto-approves their own in-band order). No role name appears in Python; changing who has unlimited authority is a data change.
 
+*Alternative considered:* modelling Admin as an `APPROVE_ANY` permission via role–permission tables. Rejected because it adds tables beyond the assignment's schema and splits authority across two mechanisms, where the catch-all rule keeps creator authority, routing precedence and escalation resolution behind one predicate — and tests prove the catch-all never hijacks routing.
+
 ### D3 — Ambiguity escalates
 Multiple active policies for one (entity_type, capability) → policy conflict; distinct rules tied at the top priority → rule-priority conflict; no active policy or no matching rule — all → `ESCALATED`, never an arbitrary pick. There is deliberately no unique constraint on active policies so the conflict path is reachable and tested.
 
@@ -115,7 +117,7 @@ The entity is created and the Context & Capability Agent performs the check (as 
 A Finance Head is **not** the approver for a ₹5,000 order; only Admin transcends bands (via D2). A role-hierarchy table was considered and deliberately left out as beyond the assignment's rules.
 
 ### D6 — Per-step, structured + explained audit
-One `ApprovalLog` row per agent action with structured fields (`agent_name`, `action`, `policy_id`, `rule_applied`, `tool_called`, `performed_by`) **and** a concise natural-language `reasoning_trace` — never raw LLM chain-of-thought. `policy_id` and `tool_called` extend the assignment's schema because its audit requirement demands the exact policy and tool trail.
+One `ApprovalLog` row per agent action with structured fields (`agent_name`, `action`, `policy_id`, `rule_applied`, `tool_called`, `performed_by`, `execution_id`, `step_number`) **and** a concise natural-language `reasoning_trace` — never raw LLM chain-of-thought. `policy_id`, `tool_called`, `execution_id` and `step_number` extend the assignment's schema because its audit requirement demands the exact policy, the tool trail, and an ordered step-by-step trace of each workflow run.
 
 ### D7 — Approval action security (documented simplification: no auth system)
 `POST /{entity}/{id}/action` takes `{user_id, action, remarks}`. Server-side: actor must be the assigned `current_approver` (or satisfy D8 for escalated entities), be active, and the transition must be legal. The row is locked with `SELECT … FOR UPDATE` (PostgreSQL) for the whole check-and-transition, so concurrent duplicate actions serialize and the loser gets 409. Creators are excluded from eligibility (no self-approval); among multiple eligible approvers the lowest user id wins (deterministic).
@@ -160,3 +162,4 @@ All 16 required cases are covered across `tests/` (97 tests): admin auto-approva
 - **Tests on SQLite:** fast and service-free; `FOR UPDATE` is a no-op on SQLite and takes effect on PostgreSQL.
 - **HITL interrupt/resume:** the good-to-have LangGraph `interrupt()` pattern is deferred; the API-based human approval flow (assignment's required path) is complete.
 - **Auth:** actor identity travels in the payload by design (D7); a real deployment would replace it with authenticated identity.
+- **Session lifetime:** one session spans a workflow run so all writes (concentrated in the final audit node) commit atomically. With a real LLM this keeps a connection open for the run's duration — acceptable here; a production deployment would move graph execution to a worker queue and shorten read transactions.

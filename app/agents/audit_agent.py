@@ -27,11 +27,13 @@ def run_audit_agent(db: Session, state: ApprovalState) -> dict:
         remarks = f"Entity update failed: {exc}"
         final_status = state.final_status or EntityStatus.ESCALATED
 
-    for entry in state.audit_entries:
+    for step, entry in enumerate(state.audit_entries, start=1):
         db_tools.persist_audit_log(
             db,
             state.entity_type,
             state.entity_id,
+            execution_id=state.execution_id,
+            step_number=step,
             action=entry.action,
             agent_name=entry.agent_name,
             policy_id=entry.policy_id,
@@ -51,6 +53,8 @@ def run_audit_agent(db: Session, state: ApprovalState) -> dict:
         db,
         state.entity_type,
         state.entity_id,
+        execution_id=state.execution_id,
+        step_number=len(state.audit_entries) + 1,
         action="final_decision",
         agent_name=AGENT_NAME,
         policy_id=decision.policy_id if decision else None,

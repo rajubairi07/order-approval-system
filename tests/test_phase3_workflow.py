@@ -180,6 +180,11 @@ class TestAuditTrail:
         assert final.rule_applied == result.decision.required_rule_id
         assert "PENDING_APPROVAL" in final.reasoning_trace
 
+        # One execution_id per workflow run, steps numbered in order
+        execution_ids = {log.execution_id for log in logs}
+        assert len(execution_ids) == 1 and None not in execution_ids
+        assert [log.step_number for log in logs] == [1, 2, 3, 4, 5]
+
     def test_no_guardrail_overrides_in_mock_mode(self, seeded_db, llm):
         """Mock submissions must match deterministic truth exactly."""
         order = _order(seeded_db, "bob.supervisor@example.com", "75000.00")

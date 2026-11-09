@@ -28,6 +28,7 @@ class ApprovalState(BaseModel):
     # Workflow inputs (spec section 5)
     entity_type: EntityType
     entity_id: int
+    execution_id: str | None = None
     creator_id: int
     entity_value: Decimal
     capability: CapabilityType

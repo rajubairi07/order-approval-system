@@ -14,8 +14,9 @@ def _utcnow() -> datetime:
 class ApprovalLog(Base):
     """One row per agent/user action on an entity (spec decision D6).
 
-    Extends the assignment schema with policy_id and tool_called: the audit
-    requirement demands the exact policy applied and the tools invoked, which
+    Extends the assignment schema with policy_id, tool_called, execution_id
+    and step_number: the audit requirement demands the exact policy applied,
+    the tools invoked, and a step-by-step trace of each workflow run, which
     rule_applied alone cannot convey.
     """
 
@@ -26,6 +27,10 @@ class ApprovalLog(Base):
         Enum(EntityType, native_enum=False, length=20)
     )
     entity_id: Mapped[int] = mapped_column()
+    execution_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    step_number: Mapped[int | None] = mapped_column(nullable=True)
     action: Mapped[str] = mapped_column(String(100))
     performed_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True
