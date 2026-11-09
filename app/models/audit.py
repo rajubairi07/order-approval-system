@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Enum, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text, TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -9,6 +9,28 @@ from app.models.enums import EntityType
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator):
+    """Timezone-aware UTC timestamps on every backend.
+
+    PostgreSQL's timestamptz round-trips aware datetimes natively; SQLite
+    stores naive values, so re-attach UTC on load to keep the API contract
+    (offset-marked ISO strings) backend-independent.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class ApprovalLog(Base):
@@ -40,9 +62,10 @@ class ApprovalLog(Base):
     rule_applied: Mapped[int | None] = mapped_column(
         ForeignKey("approval_rules.id"), nullable=True
     )
-    tool_called: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Text, not String(255): a real-LLM run's joined tool trace is unbounded
+    tool_called: Mapped[str | None] = mapped_column(Text, nullable=True)
     reasoning_trace: Mapped[str | None] = mapped_column(Text, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(default=_utcnow)
+    timestamp: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
     remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (

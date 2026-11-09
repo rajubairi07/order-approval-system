@@ -4,7 +4,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.api import audit, orders, policies, quotes
-from app.exceptions import AuthorizationError, InvalidTransitionError, NotFoundError
+from app.exceptions import (
+    AuthorizationError,
+    InvalidActionError,
+    InvalidTransitionError,
+    NotFoundError,
+)
 
 app = FastAPI(
     title="Agentic Order & Quote Approval Management System",
@@ -21,10 +26,15 @@ app.include_router(quotes.router)
 app.include_router(policies.router)
 app.include_router(audit.router)
 
+# Only typed domain errors map to client-facing codes. Deliberately no
+# blanket ValueError handler: pydantic's ValidationError subclasses ValueError,
+# and server misconfiguration (e.g. a bad LLM_PROVIDER) must surface as 5xx,
+# not a client-blaming 400.
 _STATUS_FOR = {
     NotFoundError: 404,
     AuthorizationError: 403,
     InvalidTransitionError: 409,
+    InvalidActionError: 400,
 }
 
 
@@ -36,11 +46,6 @@ def _register(exc_type: type, status_code: int) -> None:
 
 for exc_type, code in _STATUS_FOR.items():
     _register(exc_type, code)
-
-
-@app.exception_handler(ValueError)
-async def value_error_handler(request: Request, exc: ValueError):
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 @app.get("/health", tags=["meta"])

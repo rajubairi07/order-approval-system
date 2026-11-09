@@ -6,6 +6,8 @@ providers go through LangChain's init_chat_model, which resolves credentials
 from standard environment variables.
 """
 
+from functools import lru_cache
+
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config import get_settings
@@ -18,7 +20,10 @@ _DEFAULT_MODELS = {
 }
 
 
+@lru_cache(maxsize=1)
 def get_chat_model() -> BaseChatModel:
+    """Build (once) and reuse the configured chat model: provider clients keep
+    HTTP connection pools that should outlive a single request."""
     settings = get_settings()
     provider = settings.llm_provider.lower()
 

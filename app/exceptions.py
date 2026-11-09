@@ -15,3 +15,7 @@ class InvalidTransitionError(DomainError):
 
 class AuthorizationError(DomainError):
     """The acting user is not permitted to perform this action."""
+
+
+class InvalidActionError(DomainError):
+    """The requested action name is not a supported approval action."""

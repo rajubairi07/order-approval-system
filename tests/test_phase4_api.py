@@ -25,7 +25,7 @@ def client(engine, seeded_db):
     app.dependency_overrides[get_db] = override
     with TestClient(app) as test_client:
         yield test_client
-    app.dependency_overrides.clear()
+    app.dependency_overrides.pop(get_db, None)
 
 
 def _uid(db, email) -> int:

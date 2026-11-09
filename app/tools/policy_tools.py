@@ -1,6 +1,6 @@
 """Tools for reading approval policies and their rules."""
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import ApprovalPolicy, ApprovalRule
 from app.models.enums import CapabilityType, EntityType
@@ -28,6 +28,7 @@ def get_approval_rules(db: Session, policy_id: int) -> list[RuleInfo]:
     """Fetch all rules of a policy, highest precedence (lowest priority) first."""
     rows = (
         db.query(ApprovalRule)
+        .options(joinedload(ApprovalRule.allowed_role))
         .filter_by(policy_id=policy_id)
         .order_by(ApprovalRule.priority, ApprovalRule.min_value)
         .all()

@@ -10,8 +10,10 @@ from app.llm.provider import get_chat_model
 @pytest.fixture(autouse=True)
 def _fresh_settings():
     get_settings.cache_clear()
+    get_chat_model.cache_clear()
     yield
     get_settings.cache_clear()
+    get_chat_model.cache_clear()
 
 
 def test_default_provider_is_mock_no_credentials_needed(monkeypatch):

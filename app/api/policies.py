@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database.connection import get_db
 from app.models import ApprovalPolicy, ApprovalRule, Role
@@ -10,7 +10,12 @@ router = APIRouter(prefix="/policies", tags=["policies"])
 
 @router.get("", response_model=list[PolicyResponse])
 def list_policies(db: Session = Depends(get_db)):
-    return db.query(ApprovalPolicy).order_by(ApprovalPolicy.id).all()
+    return (
+        db.query(ApprovalPolicy)
+        .options(selectinload(ApprovalPolicy.rules))
+        .order_by(ApprovalPolicy.id)
+        .all()
+    )
 
 
 @router.post("", response_model=PolicyResponse, status_code=201)

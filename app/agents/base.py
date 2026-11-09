@@ -46,9 +46,15 @@ def run_agent_loop(
         ai = llm_bound.invoke(messages)
         messages.append(ai)
         if not ai.tool_calls:
-            raise AgentProtocolError(
-                f"Agent produced no tool call; expected data tools then {submit_tool.name}."
+            # Real models sometimes emit a text-only turn (a preamble or a
+            # summary); nudge and continue instead of failing the workflow.
+            messages.append(
+                HumanMessage(
+                    "Respond only with tool calls: use your data tools, then "
+                    f"call {submit_tool.name} exactly once."
+                )
             )
+            continue
         for tc in ai.tool_calls:
             if tc["name"] == submit_tool.name:
                 return tc["args"], trace

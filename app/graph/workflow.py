@@ -21,7 +21,10 @@ def build_workflow():
     graph.add_node("policy", nodes.safe("policy")(nodes.policy_node))
     graph.add_node("authority", nodes.safe("authority")(nodes.authority_node))
     graph.add_node("routing", nodes.safe("routing")(nodes.routing_node))
-    graph.add_node("audit", nodes.safe("audit")(nodes.audit_node))
+    # audit is deliberately NOT safe()-wrapped: it is the terminal persister,
+    # so a swallowed failure there would commit an unaudited decision. Its
+    # exceptions propagate to process_entity, which rolls back the run.
+    graph.add_node("audit", nodes.audit_node)
 
     graph.add_edge(START, "load_entity")
     graph.add_conditional_edges("load_entity", nodes.after_load, ["audit", "context"])

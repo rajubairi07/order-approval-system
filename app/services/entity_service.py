@@ -7,16 +7,13 @@ from sqlalchemy.orm import Session
 
 from app import tools as db_tools
 from app.agents.orchestrator import CAPABILITY_FOR_ENTITY, process_entity
-from app.exceptions import AuthorizationError, NotFoundError
+from app.exceptions import AuthorizationError, InvalidActionError, InvalidTransitionError, NotFoundError
 from app.graph.state import ApprovalState
-from app.models import Order, Quote, User
+from app.models import User
 from app.models.enums import EntityStatus, EntityType
 from app.schemas.approval import EntityInfo
 from app.services.evaluator import rule_matches
-from app.tools.entity_tools import load_row as _load_entity_row
-
-_ENTITY_MODEL = {EntityType.ORDER: Order, EntityType.QUOTE: Quote}
-_VALUE_FIELD = {EntityType.ORDER: "order_value", EntityType.QUOTE: "quote_value"}
+from app.tools.entity_tools import _ENTITY_MODEL, _VALUE_ATTR
 
 ACTION_TO_STATUS = {
     "APPROVE": EntityStatus.APPROVED,
@@ -33,7 +30,7 @@ def create_and_process(
         raise NotFoundError(f"Creator user {created_by} not found")
 
     row = _ENTITY_MODEL[entity_type](
-        created_by=created_by, **{_VALUE_FIELD[entity_type]: value}
+        created_by=created_by, **{_VALUE_ATTR[entity_type]: value}
     )
     db.add(row)
     db.commit()
@@ -42,11 +39,21 @@ def create_and_process(
     return db_tools.get_entity_details(db, entity_type, row.id), result
 
 
-def _escalation_authority(db: Session, entity: EntityInfo, actor_role_ids: set[int]) -> bool:
-    """D8: an escalated entity may be resolved by any active user holding the
-    role of any rule matching its value — in seed data, Admin via the
-    catch-all. No role name is hardcoded."""
+def _has_decision_authority(db: Session, entity: EntityInfo, actor_id: int) -> bool:
+    """D8: may this user decide an entity outside the assigned-approver path?
+
+    Mirrors routing eligibility so nobody can resolve an entity they could
+    never be routed: the actor must not be the creator (no self-approval),
+    must hold the entity's capability, and must hold the role of an active
+    rule matching the value — in seed data, Admin via the catch-all. No role
+    name is hardcoded.
+    """
+    if actor_id == entity.created_by:
+        return False
     capability = CAPABILITY_FOR_ENTITY[entity.entity_type]
+    if capability.value not in db_tools.get_user_capabilities(db, actor_id):
+        return False
+    actor_role_ids = {r.id for r in db_tools.get_user_roles(db, actor_id)}
     for policy in db_tools.fetch_active_policies(db, entity.entity_type, capability):
         for rule in db_tools.get_approval_rules(db, policy.id):
             if rule_matches(rule, entity.value) and rule.allowed_role_id in actor_role_ids:
@@ -66,14 +73,15 @@ def apply_action(
 
     The entity row is locked (SELECT ... FOR UPDATE on PostgreSQL) for the
     whole check-and-transition, so concurrent duplicate actions serialize and
-    the loser fails the state-machine check (D7).
+    the loser fails the state-machine check (D7). Human actions are legal
+    ONLY from PENDING_APPROVAL and ESCALATED: CREATED belongs to the
+    workflow and terminal states are final (409 for everything else).
     """
     new_status = ACTION_TO_STATUS.get(action)
     if new_status is None:
-        raise ValueError(f"Unknown action '{action}'; expected APPROVE or REJECT")
+        raise InvalidActionError(f"Unknown action '{action}'; expected APPROVE or REJECT")
 
-    row = _load_entity_row(db, entity_type, entity_id, for_update=True)
-    entity = db_tools.get_entity_details(db, entity_type, entity_id)
+    entity = db_tools.get_entity_details(db, entity_type, entity_id, for_update=True)
 
     actor = db_tools.get_user_details(db, actor_id)
     if not actor.is_active:
@@ -81,20 +89,32 @@ def apply_action(
 
     if entity.status == EntityStatus.PENDING_APPROVAL:
         if actor_id != entity.current_approver:
-            raise AuthorizationError(
-                f"User {actor_id} is not the assigned approver for "
-                f"{entity_type.value} {entity_id}"
+            assigned = (
+                db_tools.get_user_details(db, entity.current_approver)
+                if entity.current_approver is not None
+                else None
             )
+            # If the assigned approver can no longer act, D8 authority
+            # holders may decide, so staff churn cannot deadlock an entity.
+            if (assigned is not None and assigned.is_active) or not _has_decision_authority(
+                db, entity, actor_id
+            ):
+                raise AuthorizationError(
+                    f"User {actor_id} is not the assigned approver for "
+                    f"{entity_type.value} {entity_id}"
+                )
     elif entity.status == EntityStatus.ESCALATED:
-        actor_role_ids = {r.id for r in db_tools.get_user_roles(db, actor_id)}
-        if not _escalation_authority(db, entity, actor_role_ids):
+        if not _has_decision_authority(db, entity, actor_id):
             raise AuthorizationError(
                 f"User {actor_id} lacks authority to resolve the escalated "
                 f"{entity_type.value} {entity_id}"
             )
+    else:
+        raise InvalidTransitionError(
+            f"No human action is permitted while {entity_type.value} {entity_id} "
+            f"is {entity.status.value}"
+        )
 
-    # Raises InvalidTransitionError for terminal/CREATED states — including
-    # the loser of a concurrent duplicate action.
     info = db_tools.update_entity_status(db, entity_type, entity_id, new_status)
 
     # A human action is its own single-step execution, so the trail never

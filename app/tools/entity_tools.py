@@ -18,7 +18,9 @@ _VALUE_ATTR = {EntityType.ORDER: "order_value", EntityType.QUOTE: "quote_value"}
 
 
 def load_row(db: Session, entity_type: EntityType, entity_id: int, *, for_update: bool = False):
-    query = db.query(_ENTITY_MODEL[entity_type])
+    # populate_existing refreshes identity-map rows, so status checks never
+    # run against attributes cached before a concurrent commit.
+    query = db.query(_ENTITY_MODEL[entity_type]).populate_existing()
     if for_update:
         query = query.with_for_update()
     row = query.filter_by(id=entity_id).one_or_none()
@@ -38,9 +40,15 @@ def _to_info(entity_type: EntityType, row) -> EntityInfo:
     )
 
 
-def get_entity_details(db: Session, entity_type: EntityType, entity_id: int) -> EntityInfo:
-    """Fetch an order/quote as a uniform EntityInfo."""
-    return _to_info(entity_type, load_row(db, entity_type, entity_id))
+def get_entity_details(
+    db: Session, entity_type: EntityType, entity_id: int, *, for_update: bool = False
+) -> EntityInfo:
+    """Fetch an order/quote as a uniform EntityInfo.
+
+    for_update=True row-locks (SELECT ... FOR UPDATE on PostgreSQL) so a
+    check-and-transition sequence serializes against concurrent actions (D7).
+    """
+    return _to_info(entity_type, load_row(db, entity_type, entity_id, for_update=for_update))
 
 
 def update_entity_status(
@@ -48,16 +56,14 @@ def update_entity_status(
     entity_type: EntityType,
     entity_id: int,
     new_status: EntityStatus,
-    *,
-    for_update: bool = False,
 ) -> EntityInfo:
     """Transition an entity's status, enforcing the state machine.
 
-    Raises InvalidTransitionError for illegal transitions. Pass
-    for_update=True from the approval-action path to row-lock against
-    concurrent duplicate actions (spec decision D7).
+    Raises InvalidTransitionError for illegal transitions. Callers needing
+    race protection take the row lock first via
+    get_entity_details(for_update=True).
     """
-    row = load_row(db, entity_type, entity_id, for_update=for_update)
+    row = load_row(db, entity_type, entity_id)
     validate_transition(row.status, new_status)
     row.status = new_status
     db.flush()

@@ -19,10 +19,9 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from app.agents.base import CONTEXT_MARKER
 from app.schemas.approval import PolicyInfo, RuleInfo
 from app.services.evaluator import evaluate_policy
-
-CONTEXT_MARKER = "CONTEXT_JSON:"
 
 
 def _parse_conversation(messages: list[BaseMessage]):
@@ -128,6 +127,11 @@ class MockChatModel(BaseChatModel):
                 "capability": ctx["capability"],
             }
         policies = [PolicyInfo.model_validate(p) for p in policy_fetches[0]["result"]]
+        if len(policies) != 1:
+            # No-policy / policy-conflict outcomes need no rules — submit
+            # directly instead of burning a turn per policy on rule fetches.
+            decision = evaluate_policy(policies, {}, Decimal(ctx["entity_value"]))
+            return "submit_policy_decision", decision.model_dump(mode="json")
         rules_by_policy = {
             e["args"]["policy_id"]: [RuleInfo.model_validate(r) for r in e["result"]]
             for e in _results(executed, "get_approval_rules")
