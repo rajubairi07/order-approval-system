@@ -65,6 +65,25 @@ Each LLM agent runs a shared tool-calling loop ([app/agents/base.py](app/agents/
 
 Division of labour (the assignment's core principle): **LLMs coordinate and explain; deterministic Python enforces.** Policy matching, authority, state transitions, approver authorization and audit writes are all deterministic code paths — the LLM cannot alter them, only narrate and traverse them.
 
+### Tool definitions
+
+Ten tools in [app/tools/](app/tools/) are the **only** code permitted to touch the database. Agents receive them as LangChain `StructuredTool`s whose `func` closes over the request's `Session` ([app/agents/toolkits.py](app/agents/toolkits.py)) — the session never enters the model's context, so "don't invent a policy" is enforced by what the agent can physically reach, not by instruction. Every tool takes `db: Session` as its first argument (bound, not exposed), returns a Pydantic schema rather than an ORM row, and **flushes but never commits**: the unit of work belongs to the caller, so a whole workflow run either fully persists or fully rolls back.
+
+| Tool | Signature (after the bound `db`) | Returns | Raises / notes |
+|---|---|---|---|
+| `get_entity_details` | `(entity_type, entity_id, *, for_update=False)` | `EntityInfo` | `NotFoundError`. `for_update=True` emits `SELECT … FOR UPDATE` (D7). Projects both `orders` and `quotes` into one shape — this is what lets one graph serve both |
+| `update_entity_status` | `(entity_type, entity_id, new_status)` | `EntityInfo` | `InvalidTransitionError` — calls `validate_transition`, so **no status write in the system can bypass the state machine** |
+| `assign_approver` | `(entity_type, entity_id, approver_id)` | `EntityInfo` | `NotFoundError` |
+| `get_user_details` | `(user_id)` | `UserInfo` | `NotFoundError` |
+| `get_user_roles` | `(user_id)` | `list[RoleInfo]` | `NotFoundError` |
+| `get_user_capabilities` | `(user_id)` | `list[str]` | Returns names (`["PURCHASE"]`) so the capability check is a plain membership test |
+| `fetch_active_policies` | `(entity_type, capability)` | `list[PolicyInfo]` | Returns a **list by design**: more than one active policy is a conflict the evaluator must see, not a case to silently pick from (D3) |
+| `get_approval_rules` | `(policy_id)` | `list[RuleInfo]` | Eager-loads the role (`joinedload`) to avoid an N+1; ordered by `priority`, then `min_value` |
+| `find_eligible_approvers` | `(role_id, capability, exclude_user_id=None)` | `list[UserInfo]` | One query expressing four rules: active **and** holds the role **and** holds the capability **and** is not the creator; ordered by `id` for deterministic selection (D7) |
+| `persist_audit_log` | `(entity_type, entity_id, action, *, execution_id, step_number, performed_by, agent_name, policy_id, rule_applied, tool_called, reasoning_trace, remarks)` | `int` (log id) | Keyword-only after `action` — eleven similarly-typed optionals would otherwise be a bug factory |
+
+Which agent may call which is in the table above; an agent that requests a tool outside its toolkit raises `AgentProtocolError`.
+
 ### Graph topology (shared by ORDER and QUOTE)
 
 ```
@@ -89,7 +108,33 @@ START
 
 One compiled graph serves both entity types; the request's DB session and chat model travel in LangGraph's `config["configurable"]`. Agent nodes are wrapped by `safe()` so an unexpected failure escalates with an audit entry instead of crashing mid-workflow. Two nodes are deliberately **not** wrapped: `audit`, because swallowing a trail-write failure would commit an unaudited decision, and `human_decision`, because `interrupt()` signals by raising and must reach the runtime.
 
-### State machine
+### Shared state schema
+
+The graph's memory is one Pydantic model, `ApprovalState` ([app/graph/state.py](app/graph/state.py)). Nodes never mutate it: each returns a **dict of the fields it changed**, and LangGraph merges that into the state before the next node runs — which is what makes the state checkpointable (D10) and every transition traceable.
+
+| Field | Type | Written by | Purpose |
+|---|---|---|---|
+| `entity_type`, `entity_id` | `EntityType`, `int` | caller | Which transaction this run is about |
+| `execution_id` | `str` | `default_factory=uuid4` | Groups this run's audit rows. Generated **by construction**, so no entry point can produce NULL-grouped rows |
+| `creator_id`, `entity_value`, `capability` | `int`, `Decimal`, `CapabilityType` | caller, re-grounded by `load_entity` | The facts the policy is evaluated against |
+| `creator_active`, `creator_role_ids`, `creator_role_names`, `creator_capabilities`, `capability_ok` | — | Context agent | Who the creator is and whether they may transact |
+| `decision` | `PolicyDecision` | Policy agent | The governing rule, **plus** every matching rule — the two readings D2 depends on |
+| `creator_authorized` | `bool` | `authority` node (deterministic) | Auto-approve or route |
+| `approver_id` | `int \| None` | Routing agent | The assigned approver |
+| `hitl` | `bool` | caller / settings | Whether to pause at `PENDING_APPROVAL`; kept in state so the branch is testable without globals |
+| `final_status`, `status_reason`, `error` | — | any node | The outcome; `final_status` being set is what the conditional edges read to short-circuit |
+| `steps_persisted` | `int` | audit node | How many rows were written, so a resumed run continues the numbering |
+| `audit_entries` | `Annotated[list[AuditEntry], operator.add]` | every agent | **The one field with a reducer** |
+
+That last row is the mechanism behind the audit trail. Every other field follows last-write-wins; `operator.add` makes returned lists **concatenate** instead of replacing, so four agents can each contribute one `AuditEntry` and the audit node finds all four. Without it, each node would overwrite the previous one's entry and the trail would be a single row.
+
+`AuditEntry` is the per-step record an agent builds: `action`, `agent_name`, `policy_id`, `rule_applied`, `tool_called`, `reasoning_trace`, `remarks`.
+
+Request-scoped dependencies — the `Session` and the chat model — deliberately travel in LangGraph's `config["configurable"]` rather than in the state, because the state gets serialised into checkpoints and a database session is neither serialisable nor meaningful after a restart.
+
+Agent handoffs are separately typed: each LLM agent finishes by calling a `submit_*` tool whose arguments are a Pydantic model (`ContextResult`, `PolicyDecision`, `RoutingResult` in [app/schemas/](app/schemas/)), so the handoff is validated at the tool boundary before the node ever sees it.
+
+### Entity state machine
 
 ```
 CREATED → APPROVED | PENDING_APPROVAL | REJECTED | ESCALATED
