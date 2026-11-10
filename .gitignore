@@ -8,3 +8,6 @@ __pycache__/
 
 # Personal manual - not part of the submission
 MANUAL.md
+
+# Word lock/owner temp files
+~$*
