@@ -87,7 +87,7 @@ START
                                     └─ otherwise ─────────────────────────→ END
 ```
 
-One compiled graph serves both entity types; the request's DB session and chat model travel in LangGraph's `config["configurable"]`. Every node is wrapped so an unexpected failure escalates with an audit entry instead of crashing mid-workflow.
+One compiled graph serves both entity types; the request's DB session and chat model travel in LangGraph's `config["configurable"]`. Agent nodes are wrapped by `safe()` so an unexpected failure escalates with an audit entry instead of crashing mid-workflow. Two nodes are deliberately **not** wrapped: `audit`, because swallowing a trail-write failure would commit an unaudited decision, and `human_decision`, because `interrupt()` signals by raising and must reach the runtime.
 
 ### State machine
 
@@ -111,8 +111,9 @@ app/
 ├── schemas/                    request/response + structured agent outputs
 ├── services/                   evaluator, state machine, entity/action service
 ├── tools/                      10 typed database tools
-└── database/                   engine/session, idempotent seed
-tests/                          97 tests across 5 phases
+├── database/                   engine/session, idempotent seed
+└── exceptions.py               typed domain errors → HTTP status codes
+tests/                          115 tests across 7 phases
 ```
 
 ## Design decisions
@@ -137,7 +138,7 @@ The entity is created and the Context & Capability Agent performs the check (as 
 A Finance Head is **not** the approver for a ₹5,000 order; only Admin transcends bands (via D2). A role-hierarchy table was considered and deliberately left out as beyond the assignment's rules.
 
 ### D6 — Per-step, structured + explained audit
-One `ApprovalLog` row per agent action with structured fields (`agent_name`, `action`, `policy_id`, `rule_applied`, `tool_called`, `performed_by`, `execution_id`, `step_number`) **and** a concise natural-language `reasoning_trace` — never raw LLM chain-of-thought. `policy_id`, `tool_called`, `execution_id` and `step_number` extend the assignment's schema because its audit requirement demands the exact policy, the tool trail, and an ordered step-by-step trace of each workflow run. A human APPROVE/REJECT is recorded as its own single-step execution (fresh `execution_id`, `step_number` 1), so a trail never mixes numbered and NULL steps.
+One `ApprovalLog` row per agent action with structured fields (`agent_name`, `action`, `policy_id`, `rule_applied`, `tool_called`, `performed_by`, `execution_id`, `step_number`) **and** a concise natural-language `reasoning_trace` — never raw LLM chain-of-thought. `policy_id`, `tool_called`, `execution_id` and `step_number` extend the assignment's schema because its audit requirement demands the exact policy, the tool trail, and an ordered step-by-step trace of each workflow run. A human APPROVE/REJECT extends the run it resolves: with HITL enabled it becomes the next step of the *same* `execution_id` (D10), and on the fallback path it is recorded as its own single-step execution. Either way every row carries both fields, so a trail never mixes numbered and NULL steps.
 
 ### D7 — Approval action security (documented simplification: no auth system)
 `POST /{entity}/{id}/action` takes `{user_id, action, remarks}`. Human actions are legal **only** from `PENDING_APPROVAL` (assigned approver) and `ESCALATED` (D8 authority) — any other status, including `CREATED`, returns 409, because `CREATED` belongs to the workflow and must never be human-decidable. The row is locked with `SELECT … FOR UPDATE` (PostgreSQL) and re-read fresh (`populate_existing`) for the whole check-and-transition, so concurrent duplicate actions serialize and the loser gets 409. Creators are excluded from eligibility (no self-approval); among multiple eligible approvers the lowest user id wins (deterministic). If the assigned approver has been **deactivated**, D8 authority holders may decide instead, so staff churn cannot deadlock an entity.
@@ -145,15 +146,15 @@ One `ApprovalLog` row per agent action with structured fields (`agent_name`, `ac
 ### D8 — Escalation / override authority
 An entity in `ESCALATED` (or `PENDING_APPROVAL` with an inactive assigned approver) may be decided by any **active, non-creator** user who holds the entity's **capability** and the role of **any active rule matching the value** — in seed data that's Admin via the catch-all, with no hardcoded role. The predicate deliberately mirrors routing eligibility: nobody can resolve an entity they could never have been routed. An entity escalated for *no active policy* is resolvable again as soon as an active policy exists — restoring configuration restores authority, by data.
 
+### D9 — Mock LLM runs the real graph
+`MockChatModel` subclasses LangChain's `BaseChatModel` and deterministically scripts each agent's tool calls through the **identical** loop, tools, schemas and edges as a real model. Guardrails cross-check every LLM-produced id against the database in both modes.
+
 ### D10 — Human-in-the-loop by interrupt/resume
 With `ENABLE_HITL=true` (the default) a `PENDING_APPROVAL` outcome does not end the run: the graph continues to a `human_decision` node that calls LangGraph's `interrupt()`, checkpointing the state. The status and the five audit rows are already committed, so the entity is durably pending while the run sleeps. The approver's `POST /{entity}/{id}/action` then **resumes that same run**, and the decision is recorded as step 6 of the *same* `execution_id` rather than a separate execution.
 
 **Authorisation never moves into the graph.** `apply_action` still takes the row lock and runs every check (active actor, assigned approver or override authority, legal transition) *before* resuming; the `human_decision` node only applies the transition and extends the trail. A rejected actor leaves the run untouched and still parked.
 
 Two deliberate properties: a finished run's checkpoint is **discarded** immediately, so only genuinely-paused runs hold memory; and if a checkpoint is missing — after a process restart, since the checkpointer is in-memory — `apply_action` falls back to applying the decision directly. The feature degrades to the pre-HITL behaviour instead of blocking approvals.
-
-### D9 — Mock LLM runs the real graph
-`MockChatModel` subclasses LangChain's `BaseChatModel` and deterministically scripts each agent's tool calls through the **identical** loop, tools, schemas and edges as a real model. Guardrails cross-check every LLM-produced id against the database in both modes.
 
 ## Database
 
@@ -181,7 +182,7 @@ Seed data: 7 roles, 2 capabilities, 2 active policies (4 rules each incl. the Ad
 
 ## Test matrix (assignment cases → tests)
 
-All 16 required cases are covered across `tests/` (97 tests): admin auto-approval (1), supervisor low/high value (2, 3), sales-exec low/high quote (4, 5), dual-capability user (6), no eligible approver (7), inactive policy (8), overlapping rules (9), priority conflicts (10), missing capability (11), unauthorized approval → 403 (12), invalid transitions → 409 (13), approver rejection (14), audit policy/rule ids (15), and mock mode with zero credentials (16 — the entire suite runs this way, plus explicit provider tests). Boundary values (9,999.99 / 10,000.00 / 25,000.00 / 25,000.01 / 100,000.00 / 100,000.01) are tested exactly.
+All 16 required cases are covered across `tests/` (115 tests): admin auto-approval (1), supervisor low/high value (2, 3), sales-exec low/high quote (4, 5), dual-capability user (6), no eligible approver (7), inactive policy (8), overlapping rules (9), priority conflicts (10), missing capability (11), unauthorized approval → 403 (12), invalid transitions → 409 (13), approver rejection (14), audit policy/rule ids (15), and mock mode with zero credentials (16 — the entire suite runs this way, plus explicit provider tests). Boundary values (9,999.99 / 10,000.00 / 25,000.00 / 25,000.01 / 100,000.00 / 100,000.01) are tested exactly.
 
 ## Scope notes
 
