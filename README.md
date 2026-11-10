@@ -201,7 +201,21 @@ With `ENABLE_HITL=true` (the default) a `PENDING_APPROVAL` outcome does not end 
 
 Two deliberate properties: a finished run's checkpoint is **discarded** immediately, so only genuinely-paused runs hold memory; and if a checkpoint is missing — after a process restart, since the checkpointer is in-memory — `apply_action` falls back to applying the decision directly. The feature degrades to the pre-HITL behaviour instead of blocking approvals.
 
-## Database
+## Database schema and seed data
+
+| Artefact | What it is |
+|---|---|
+| [app/models/](app/models/) | **The source of truth.** Ten SQLAlchemy models carrying every constraint, index and relationship |
+| [schema.sql](schema.sql) | The PostgreSQL DDL those models produce — generated, so the schema can be read or applied by hand without running the app. Regenerate with `python scripts/dump_schema.py` |
+| [app/database/seed.py](app/database/seed.py) | **Sample seed data**, idempotent — keyed on unique columns, so re-running inserts nothing twice |
+
+Applying both is one command, which runs `create_all` followed by the seed:
+
+```bash
+python -m app.database.seed
+```
+
+*No Alembic* — a deliberate scope decision (see Scope notes). The models are migration-ready; `create_all` creates missing tables but never ALTERs existing ones, so a schema change means recreating the development database.
 
 Entities exactly as assigned: `User`, `Role`, `UserRole`, `Capability`, `UserCapability`, `ApprovalPolicy`, `ApprovalRule`, `Order`, `Quote`, `ApprovalLog` — with FKs, unique constraints (`email`, role/capability names), check constraints (`min_value >= 0`, `max >= min`, `value > 0`) and lookup indexes.
 
