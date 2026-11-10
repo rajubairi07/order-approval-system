@@ -2,23 +2,39 @@
 
 A multi-agent approval backend for **purchase orders** and **sales quotes**, built with **FastAPI + LangGraph + PostgreSQL + SQLAlchemy**. Five specialized agents coordinate through a shared LangGraph `StateGraph`; every business rule lives in the database and reaches agents only through typed tools; every decision is structured, validated, deterministic where it must be, and fully audited with natural-language explanations.
 
-## Quick start (no API keys, no services)
+## Quick start — the whole system, no services, no API keys
 
 ```bash
 python -m venv .venv
 .venv/Scripts/activate              # Windows (source .venv/bin/activate on Unix)
 pip install -r requirements.txt
-pytest                              # 97 tests on in-memory SQLite, mock LLM
+pytest                              # 115 tests on in-memory SQLite, mock LLM
 ```
+
+That runs every workflow end to end — the real graph, the real agents, the real tools — against a throwaway database with the deterministic mock model. Nothing to install, nothing to configure.
 
 ## Running the API
 
+**Option A — SQLite, zero setup.** Good enough to click through Swagger and exercise every endpoint:
+
 ```bash
-docker compose up -d                # local PostgreSQL 16
-cp .env.example .env                # defaults: mock LLM + local PostgreSQL
+cp .env.example .env
+# Unix:    export DATABASE_URL="sqlite:///./approval.db"
+# Windows: set DATABASE_URL=sqlite:///./approval.db
 python -m app.database.seed         # create schema + seed data
 uvicorn app.main:app --reload       # Swagger at http://localhost:8000/docs
 ```
+
+**Option B — PostgreSQL**, the intended production backend. Create an empty database, point `DATABASE_URL` at it in `.env`, then run the same two commands:
+
+```bash
+createdb order_approval             # or: CREATE DATABASE order_approval;
+# .env: DATABASE_URL=postgresql+psycopg2://postgres:<password>@localhost:5432/order_approval
+python -m app.database.seed
+uvicorn app.main:app --reload
+```
+
+The models are backend-agnostic — `create_all` emits whatever DDL the connected engine speaks — so the same code serves both. Row locking (`SELECT … FOR UPDATE`, see D7) is a no-op on SQLite and takes effect on PostgreSQL.
 
 To use a real LLM, set in `.env`: `LLM_PROVIDER=openai|anthropic|google_genai|ollama`, optionally `LLM_MODEL`, and the provider's standard API-key variable. **Mock mode runs the identical workflow** — same graph, same tools, same validation (see D9).
 
@@ -169,7 +185,7 @@ All 16 required cases are covered across `tests/` (97 tests): admin auto-approva
 
 ## Scope notes
 
-- **Migrations:** `Base.metadata.create_all` + idempotent seed instead of Alembic — a deliberate trade-off for the 8–12h scope; the models are Alembic-ready. Note `create_all` never ALTERs existing tables: after pulling a schema change, recreate the dev database (`docker compose down -v && docker compose up -d && python -m app.database.seed`).
+- **Migrations:** `Base.metadata.create_all` + idempotent seed instead of Alembic — a deliberate trade-off for the 8–12h scope; the models are Alembic-ready. Note `create_all` never ALTERs existing tables: after pulling a schema change, recreate the development database — delete the SQLite file, or `DROP`/`CREATE` the PostgreSQL one — and re-run the seed.
 - **Tests on SQLite:** fast and service-free; `FOR UPDATE` is a no-op on SQLite and takes effect on PostgreSQL.
 - **HITL checkpointer is in-memory.** Paused runs live in the process, so they do not survive a restart and are not shared across workers. The fallback path (D10) keeps approvals working regardless; a production deployment would swap in a persistent checkpointer (`langgraph-checkpoint-postgres`) — a one-line change, since `CHECKPOINTER` is the only binding.
 - **Auth:** actor identity travels in the payload by design (D7); a real deployment would replace it with authenticated identity.
