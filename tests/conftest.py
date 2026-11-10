@@ -4,7 +4,18 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database.seed import seed
+from app.graph.workflow import reset_checkpoints
 from app.models import Base
+
+
+@pytest.fixture(autouse=True)
+def _clean_checkpoints():
+    """Each test gets a fresh database in which entity ids restart at 1, but
+    the graph's checkpointer is process-local — clear it so a previous test's
+    run for `ORDER:1` cannot be mistaken for this test's."""
+    reset_checkpoints()
+    yield
+    reset_checkpoints()
 
 
 @pytest.fixture()

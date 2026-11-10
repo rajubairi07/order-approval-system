@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     llm_provider: str = "mock"
     llm_model: str = ""
 
+    # Human-in-the-loop: when true the graph interrupts at PENDING_APPROVAL
+    # and the approver's decision resumes the same run (spec D10).
+    enable_hitl: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

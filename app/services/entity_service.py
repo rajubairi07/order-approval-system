@@ -6,7 +6,12 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app import tools as db_tools
-from app.agents.orchestrator import CAPABILITY_FOR_ENTITY, process_entity
+from app.agents.orchestrator import (
+    CAPABILITY_FOR_ENTITY,
+    awaiting_human_decision,
+    process_entity,
+    resume_entity,
+)
 from app.exceptions import AuthorizationError, InvalidActionError, InvalidTransitionError, NotFoundError
 from app.graph.state import ApprovalState
 from app.models import User
@@ -115,10 +120,30 @@ def apply_action(
             f"is {entity.status.value}"
         )
 
+    # Human-in-the-loop (D10): if the workflow is parked at its interrupt for
+    # this entity, resume that run so the decision becomes the next step of
+    # the same execution. Authorisation above has already passed; the graph
+    # only applies the transition and extends the trail.
+    if awaiting_human_decision(entity_type, entity_id):
+        resume_entity(
+            db,
+            entity_type,
+            entity_id,
+            {
+                "actor_id": actor_id,
+                "actor_name": actor.name,
+                "action": action,
+                "remarks": remarks,
+            },
+        )
+        return db_tools.get_entity_details(db, entity_type, entity_id)
+
+    # Fallback (HITL disabled, or the checkpoint is gone after a restart):
+    # apply the decision directly. A human action is then its own single-step
+    # execution, so the trail never mixes NULL step numbers with the
+    # workflow's numbered steps.
     info = db_tools.update_entity_status(db, entity_type, entity_id, new_status)
 
-    # A human action is its own single-step execution, so the trail never
-    # mixes NULL step numbers with the workflow's numbered steps.
     db_tools.persist_audit_log(
         db,
         entity_type,

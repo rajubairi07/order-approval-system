@@ -69,10 +69,11 @@ class TestOrderLifecycle:
         assert trail[-1]["action"] == "human_approve"
         assert trail[-1]["performed_by"] == carol
         assert trail[-1]["remarks"] == "Budget available"
-        # Human action is its own single-step execution: no NULL steps anywhere
-        assert trail[-1]["step_number"] == 1
-        assert trail[-1]["execution_id"] is not None
-        assert trail[-1]["execution_id"] != trail[0]["execution_id"]
+        # HITL is on by default, so the approval resumed the paused run and
+        # becomes the next step of the SAME execution (see test_phase7_hitl
+        # for the disabled-HITL fallback, where it is its own execution).
+        assert [t["step_number"] for t in trail] == [1, 2, 3, 4, 5, 6]
+        assert len({t["execution_id"] for t in trail}) == 1
         assert all(t["step_number"] is not None for t in trail)
 
     def test_approver_rejects(self, client, seeded_db):

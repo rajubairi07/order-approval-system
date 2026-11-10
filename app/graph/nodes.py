@@ -8,6 +8,8 @@ fallback duty).
 """
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph import END
+from langgraph.types import interrupt
 
 from app import tools as db_tools
 from app.agents.audit_agent import run_audit_agent
@@ -134,6 +136,61 @@ def audit_node(state: ApprovalState, config: RunnableConfig) -> dict:
     return run_audit_agent(db, state)
 
 
+def human_decision_node(state: ApprovalState, config: RunnableConfig) -> dict:
+    """Human-in-the-loop pause (spec D10).
+
+    `interrupt()` suspends the run here and checkpoints the state; the call
+    returns only when the graph is resumed with the approver's decision, so
+    everything below this line runs in the *resumed* invocation.
+
+    Authorisation is NOT performed here — `apply_action` has already taken the
+    row lock and verified the actor before resuming. This node applies the
+    decision and extends the same execution's audit trail.
+    """
+    decision = interrupt(
+        {
+            "awaiting": "approval_decision",
+            "entity_type": state.entity_type.value,
+            "entity_id": state.entity_id,
+            "entity_value": str(state.entity_value),
+            "assigned_approver_id": state.approver_id,
+            "required_role": state.decision.required_role_name if state.decision else None,
+            "accepts": ["APPROVE", "REJECT"],
+        }
+    )
+
+    db, _ = _cfg(config)
+    action = decision["action"]
+    new_status = (
+        EntityStatus.APPROVED if action == "APPROVE" else EntityStatus.REJECTED
+    )
+    db_tools.update_entity_status(db, state.entity_type, state.entity_id, new_status)
+
+    trace = (
+        f"{decision.get('actor_name', 'User')} (id {decision['actor_id']}) "
+        f"{action.lower()}d {state.entity_type.value} {state.entity_id} on resume "
+        f"of execution {state.execution_id}."
+    )
+    db_tools.persist_audit_log(
+        db,
+        state.entity_type,
+        state.entity_id,
+        execution_id=state.execution_id,
+        step_number=state.steps_persisted + 1,
+        action=f"human_{action.lower()}",
+        performed_by=decision["actor_id"],
+        policy_id=state.decision.policy_id if state.decision else None,
+        rule_applied=state.decision.required_rule_id if state.decision else None,
+        reasoning_trace=trace,
+        remarks=decision.get("remarks"),
+    )
+    return {
+        "final_status": new_status,
+        "status_reason": f"Resolved by the assigned approver ({action.lower()}d).",
+        "steps_persisted": state.steps_persisted + 1,
+    }
+
+
 # --- conditional edges --------------------------------------------------
 
 
@@ -155,3 +212,10 @@ def after_policy(state: ApprovalState) -> str:
 
 def after_authority(state: ApprovalState) -> str:
     return "audit" if _decided(state) else "routing"
+
+
+def after_audit(state: ApprovalState) -> str:
+    """Pause for a human only when one is actually required (spec D10)."""
+    if state.hitl and state.final_status == EntityStatus.PENDING_APPROVAL:
+        return "human_decision"
+    return END

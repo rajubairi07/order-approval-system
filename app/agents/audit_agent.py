@@ -67,7 +67,8 @@ def run_audit_agent(db: Session, state: ApprovalState) -> dict:
         remarks=remarks or state.error,
     )
 
-    for step, entry in enumerate([*state.audit_entries, final_entry], start=1):
+    entries = [*state.audit_entries, final_entry]
+    for step, entry in enumerate(entries, start=1):
         db_tools.persist_audit_log(
             db,
             state.entity_type,
@@ -83,4 +84,8 @@ def run_audit_agent(db: Session, state: ApprovalState) -> dict:
             remarks=entry.remarks,
         )
 
-    return {"final_status": final_status, "status_reason": status_reason}
+    return {
+        "final_status": final_status,
+        "status_reason": status_reason,
+        "steps_persisted": len(entries),
+    }

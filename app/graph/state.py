@@ -52,9 +52,17 @@ class ApprovalState(BaseModel):
     # Routing & Workflow Agent result
     approver_id: int | None = None
 
+    # Human-in-the-loop: when true the graph pauses at PENDING_APPROVAL via
+    # interrupt() instead of ending, and the approver's decision resumes it.
+    hitl: bool = False
+
     # Outcome
     final_status: EntityStatus | None = None
     status_reason: str | None = None
     error: str | None = None
+
+    #: How many audit rows the audit node wrote, so a resumed run can
+    #: continue the step numbering instead of recomputing it.
+    steps_persisted: int = 0
 
     audit_entries: Annotated[list[AuditEntry], operator.add] = []

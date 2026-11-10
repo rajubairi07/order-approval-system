@@ -64,7 +64,11 @@ START
                            ├─ approver → PENDING_APPROVAL
                            └─ none → ESCALATED ─────────┤
                                                         ▼
-                                  audit (persist trail, apply status) → END
+                                  audit (persist trail, apply status)
+                                    ├─ PENDING_APPROVAL → human_decision ──┐
+                                    │        interrupt() + checkpoint      │
+                                    │        ← resumed by the approver ────┘
+                                    └─ otherwise ─────────────────────────→ END
 ```
 
 One compiled graph serves both entity types; the request's DB session and chat model travel in LangGraph's `config["configurable"]`. Every node is wrapped so an unexpected failure escalates with an audit entry instead of crashing mid-workflow.
@@ -125,6 +129,13 @@ One `ApprovalLog` row per agent action with structured fields (`agent_name`, `ac
 ### D8 — Escalation / override authority
 An entity in `ESCALATED` (or `PENDING_APPROVAL` with an inactive assigned approver) may be decided by any **active, non-creator** user who holds the entity's **capability** and the role of **any active rule matching the value** — in seed data that's Admin via the catch-all, with no hardcoded role. The predicate deliberately mirrors routing eligibility: nobody can resolve an entity they could never have been routed. An entity escalated for *no active policy* is resolvable again as soon as an active policy exists — restoring configuration restores authority, by data.
 
+### D10 — Human-in-the-loop by interrupt/resume
+With `ENABLE_HITL=true` (the default) a `PENDING_APPROVAL` outcome does not end the run: the graph continues to a `human_decision` node that calls LangGraph's `interrupt()`, checkpointing the state. The status and the five audit rows are already committed, so the entity is durably pending while the run sleeps. The approver's `POST /{entity}/{id}/action` then **resumes that same run**, and the decision is recorded as step 6 of the *same* `execution_id` rather than a separate execution.
+
+**Authorisation never moves into the graph.** `apply_action` still takes the row lock and runs every check (active actor, assigned approver or override authority, legal transition) *before* resuming; the `human_decision` node only applies the transition and extends the trail. A rejected actor leaves the run untouched and still parked.
+
+Two deliberate properties: a finished run's checkpoint is **discarded** immediately, so only genuinely-paused runs hold memory; and if a checkpoint is missing — after a process restart, since the checkpointer is in-memory — `apply_action` falls back to applying the decision directly. The feature degrades to the pre-HITL behaviour instead of blocking approvals.
+
 ### D9 — Mock LLM runs the real graph
 `MockChatModel` subclasses LangChain's `BaseChatModel` and deterministically scripts each agent's tool calls through the **identical** loop, tools, schemas and edges as a real model. Guardrails cross-check every LLM-produced id against the database in both modes.
 
@@ -160,7 +171,7 @@ All 16 required cases are covered across `tests/` (97 tests): admin auto-approva
 
 - **Migrations:** `Base.metadata.create_all` + idempotent seed instead of Alembic — a deliberate trade-off for the 8–12h scope; the models are Alembic-ready. Note `create_all` never ALTERs existing tables: after pulling a schema change, recreate the dev database (`docker compose down -v && docker compose up -d && python -m app.database.seed`).
 - **Tests on SQLite:** fast and service-free; `FOR UPDATE` is a no-op on SQLite and takes effect on PostgreSQL.
-- **HITL interrupt/resume:** the good-to-have LangGraph `interrupt()` pattern is deferred; the API-based human approval flow (assignment's required path) is complete.
+- **HITL checkpointer is in-memory.** Paused runs live in the process, so they do not survive a restart and are not shared across workers. The fallback path (D10) keeps approvals working regardless; a production deployment would swap in a persistent checkpointer (`langgraph-checkpoint-postgres`) — a one-line change, since `CHECKPOINTER` is the only binding.
 - **Auth:** actor identity travels in the payload by design (D7); a real deployment would replace it with authenticated identity.
 - **Session lifetime:** one session spans a workflow run so all writes (concentrated in the final audit node) commit atomically. With a real LLM this keeps a connection open for the run's duration — acceptable here; a production deployment would move graph execution to a worker queue and shorten read transactions.
 - **Audit-write failures abort the run:** the audit node is deliberately outside the graph's error-fallback wrapper — a failure persisting the trail rolls back the whole run (5xx) rather than committing an unaudited decision.
